@@ -12,7 +12,7 @@ a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[] + anthropic_b + httpx_b + anyio_b,
-    datas=[('icon.ico', '.')] + anthropic_d + markdown_d + httpx_d + anyio_d,
+    datas=[('icon.ico', '.'), ('Create Shortcut.bat', '.')] + anthropic_d + markdown_d + httpx_d + anyio_d,
     hiddenimports=[
         # pyautogui ecosystem
         'pyautogui', 'pyscreeze', 'pymsgbox', 'pygetwindow',

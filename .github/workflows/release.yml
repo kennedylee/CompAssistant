@@ -1,0 +1,59 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Version tag to publish (e.g. v1.0.1)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve release tag
+        id: tag
+        shell: pwsh
+        run: |
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $t = "${{ inputs.tag }}"
+          } else {
+            $t = "${{ github.ref_name }}"
+          }
+          echo "name=$t" >> $env:GITHUB_OUTPUT
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build executable
+        run: pyinstaller CompAssistant.spec --noconfirm --clean
+
+      - name: Add shortcut script to build
+        run: Copy-Item "Create Shortcut.bat" "dist\CompAssistant\Create Shortcut.bat"
+
+      - name: Create release zip
+        run: Compress-Archive -Path "dist\CompAssistant\*" -DestinationPath "CompAssistant-${{ steps.tag.outputs.name }}.zip"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.name }}
+          files: CompAssistant-${{ steps.tag.outputs.name }}.zip
+          generate_release_notes: true

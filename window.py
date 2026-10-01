@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import (
 )
 
 from agent import AgentThread
-from config import get_api_key, get_model, save_settings
+from config import get_api_key, get_model, save_settings, save_history, load_history, clear_history
 
 # ── colour palette (GitHub dark) ───────────────────────────────────────────
 BG       = "#0d1117"
@@ -434,6 +434,8 @@ class MainWindow(QMainWindow):
         self._current_tool_widget: ToolWidget | None = None
 
         self._build_ui()
+        self._history = load_history()
+        self._rebuild_from_history()
         if not get_api_key():
             QTimer.singleShot(300, self._open_settings)
 
@@ -517,6 +519,34 @@ class MainWindow(QMainWindow):
         self._scroll.setWidget(self._chat_pane)
         return self._scroll
 
+    def _rebuild_from_history(self):
+        """Replay saved text messages as chat bubbles. Tool calls from a prior
+        session aren't re-rendered — only the conversation text is restored,
+        which is what the model needs for context anyway."""
+        for msg in self._history:
+            content = msg.get("content")
+            if isinstance(content, str):
+                if msg.get("role") == "user":
+                    self._chat_vbox.addWidget(UserMessageWidget(content))
+            elif isinstance(content, list):
+                if msg.get("role") != "assistant":
+                    continue
+                text = "".join(
+                    b.get("text", "") for b in content
+                    if isinstance(b, dict) and b.get("type") == "text"
+                )
+                if text.strip():
+                    widget = AiMessageWidget()
+                    widget.set_text(text)
+                    self._chat_vbox.addWidget(widget)
+        if len(self._history) > 1:
+            QTimer.singleShot(50, self._scroll_bottom)
+
+    def _sync_and_save(self):
+        if self._agent:
+            self._history = list(self._agent.history)
+        save_history(self._history)
+
     def _make_input_area(self) -> QWidget:
         bar = QWidget()
         bar.setStyleSheet(f"background:{SURFACE};border-top:1px solid {BORDER};")
@@ -557,6 +587,11 @@ class MainWindow(QMainWindow):
         self._send_btn.setEnabled(False)
         self._status.showMessage("Thinking…")
 
+        # Save the prompt itself before the turn runs, so a crash mid-turn
+        # doesn't lose it (self._history is synced properly once the turn
+        # finishes via _sync_and_save).
+        save_history(self._history + [{"role": "user", "content": text}])
+
         self._agent = AgentThread(text, self._history)
         self._agent.chunk_received.connect(self._on_chunk)
         self._agent.tool_started.connect(self._on_tool_started)
@@ -593,14 +628,13 @@ class MainWindow(QMainWindow):
         self._current_ai_widget.start_stream()
         self._chat_vbox.addWidget(self._current_ai_widget)
         self._scroll_bottom()
+        self._sync_and_save()
 
     @pyqtSlot()
     def _on_complete(self):
         if self._current_ai_widget:
             self._current_ai_widget.finish_stream()
-        # Adopt the agent's updated history
-        if self._agent:
-            self._history = list(self._agent.history)
+        self._sync_and_save()
         self._reset_input()
         self._status.showMessage("Ready")
 
@@ -616,6 +650,7 @@ class MainWindow(QMainWindow):
         if self._current_ai_widget:
             self._current_ai_widget.finish_stream()
             self._current_ai_widget.set_error(message)
+        self._sync_and_save()
         self._reset_input()
         self._status.showMessage("Error — see message above", 6000)
 
@@ -631,6 +666,7 @@ class MainWindow(QMainWindow):
             if item.widget():
                 item.widget().deleteLater()
         self._history.clear()
+        clear_history()
         self._current_ai_widget = None
         self._status.showMessage("Conversation cleared", 2000)
 

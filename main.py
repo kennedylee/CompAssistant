@@ -1,5 +1,7 @@
 import sys
 import ctypes
+import datetime
+import traceback
 from pathlib import Path
 
 from PyQt6.QtWidgets import QApplication
@@ -7,8 +9,30 @@ from PyQt6.QtGui import QIcon
 
 from window import MainWindow
 
+# Frozen (PyInstaller) builds point __file__ into a temp dir; use the exe's folder instead.
+_base = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).parent
+_crash_log = _base / 'crash.log'
+
+
+def _install_crash_logger():
+    """Without this, PyQt6 silently aborts the whole process on an unhandled
+    exception raised inside a Qt slot — no dialog, no trace, it just vanishes.
+    A custom excepthook makes PyQt6 log and keep running instead of aborting."""
+    def _hook(exc_type, exc_value, exc_tb):
+        try:
+            with open(_crash_log, 'a', encoding='utf-8') as f:
+                f.write(f"\n--- {datetime.datetime.now().isoformat()} ---\n")
+                traceback.print_exception(exc_type, exc_value, exc_tb, file=f)
+        except OSError:
+            pass
+        traceback.print_exception(exc_type, exc_value, exc_tb)
+
+    sys.excepthook = _hook
+
 
 def main():
+    _install_crash_logger()
+
     # Per-monitor DPI awareness so coordinates match pyautogui's view of the screen
     if sys.platform == "win32":
         try:

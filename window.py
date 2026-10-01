@@ -300,6 +300,15 @@ class ConfirmDialog(QDialog):
         hdr.addWidget(lbl, stretch=1)
         lay.addLayout(hdr)
 
+        # Plain description for normal-risk actions (no banner but still helpful context)
+        if risk_level == "normal" and risk_detail:
+            desc = QLabel(risk_detail)
+            desc.setWordWrap(True)
+            desc.setStyleSheet(
+                f"color:{MUTED};font-size:13px;background:transparent;"
+            )
+            lay.addWidget(desc)
+
         # Command / file preview
         body_box = QTextEdit()
         body_box.setReadOnly(True)

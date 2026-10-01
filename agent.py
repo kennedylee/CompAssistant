@@ -52,40 +52,55 @@ def _content_to_params(content) -> list:
     return result
 
 
-# (pattern, human description) — checked case-insensitively against the command
+# (pattern, plain-English warning) — checked case-insensitively against the command
 _HIGH_CMD = [
-    (r"\bRemove-Item\b",                    "Deletes files or directories"),
-    (r"\brd\b|\brmdir\b",                   "Removes directories"),
-    (r"\bFormat-\w+",                       "Formats a drive or volume"),
-    (r"\bClear-Disk\b|\bInitialize-Disk\b", "Wipes or reinitializes a disk"),
-    (r"\bInvoke-Expression\b|\biex\b",      "Executes dynamic or downloaded code"),
+    (r"\bRemove-Item\b",
+        "This will permanently delete files or folders. They will NOT go to the Recycle Bin and cannot be recovered."),
+    (r"\brd\b|\brmdir\b",
+        "This will permanently delete one or more folders and everything inside them."),
+    (r"\bFormat-\w+",
+        "This will erase everything on a drive. All data will be lost and cannot be recovered."),
+    (r"\bClear-Disk\b|\bInitialize-Disk\b",
+        "This will completely wipe a disk. Every file on it will be permanently destroyed."),
+    (r"\bInvoke-Expression\b|\biex\b",
+        "This will run code that was built on the fly. It could do anything to your computer and is difficult to predict or reverse."),
     (r"(Invoke-WebRequest|curl|wget).*\|.*(iex|Invoke-Expression)",
-                                            "Downloads and immediately executes code"),
-    (r"\bRemove-LocalUser\b",               "Deletes a local user account"),
-    (r"\bRemove-Partition\b",               "Deletes a disk partition"),
-    (r"\bClear-RecycleBin\b",              "Permanently empties the Recycle Bin"),
+        "This will download code from the internet and run it immediately on your computer without any further review."),
+    (r"\bRemove-LocalUser\b",
+        "This will permanently delete a user account from this computer, including its settings and access."),
+    (r"\bRemove-Partition\b",
+        "This will permanently delete a disk partition and all data stored on it."),
+    (r"\bClear-RecycleBin\b",
+        "This will permanently delete everything currently in the Recycle Bin. Files cannot be recovered afterward."),
 ]
 
 _MEDIUM_CMD = [
     (r"\breg\s+(add|delete)\b|Set-ItemProperty.*(HKLM|HKCU|HKEY)",
-                                            "Modifies the Windows Registry"),
+        "This will change the Windows Registry — the database that controls how your computer and programs behave. Incorrect changes can cause problems."),
     (r"\bNew-ItemProperty\b.*(HKLM|HKCU|HKEY)",
-                                            "Adds a Windows Registry entry"),
+        "This will add a new entry to the Windows Registry, which can affect how your computer or a program behaves."),
     (r"\bStop-Service\b|\bDisable-\w*Service\b",
-                                            "Stops or disables a Windows service"),
-    (r"\bSet-Service\b",                    "Changes a Windows service configuration"),
+        "This will stop or disable a background service your computer relies on. Some features or programs may stop working."),
+    (r"\bSet-Service\b",
+        "This will change the behavior of a background service that your computer depends on."),
     (r"\bNew-ScheduledTask\b|\bRegister-ScheduledTask\b",
-                                            "Creates a scheduled task"),
-    (r"\bNew-LocalUser\b",                  "Creates a local user account"),
-    (r"\bAdd-LocalGroupMember\b",           "Adds a user to a local group"),
-    (r"\bSet-ExecutionPolicy\b",            "Changes PowerShell execution policy"),
-    (r"\bnetsh\b",                          "Modifies network configuration"),
+        "This will set up a task to run automatically in the background on a schedule."),
+    (r"\bNew-LocalUser\b",
+        "This will create a new user account on this computer with the ability to log in."),
+    (r"\bAdd-LocalGroupMember\b",
+        "This will give a user account additional permissions or access on this computer."),
+    (r"\bSet-ExecutionPolicy\b",
+        "This will change which scripts and programs are allowed to run on this computer."),
+    (r"\bnetsh\b",
+        "This will change your network or internet connection settings, which could affect your ability to get online."),
     (r"\bNew-NetFirewallRule\b|\bRemove-NetFirewallRule\b",
-                                            "Changes Windows Firewall rules"),
+        "This will change your firewall rules, which control what is allowed to connect to or from your computer."),
     (r"\bStop-Computer\b|\bRestart-Computer\b",
-                                            "Shuts down or restarts the computer"),
-    (r"\bDisable-WindowsOptionalFeature\b", "Disables a Windows feature"),
-    (r"\bStop-Process\b|\bkill\b",          "Terminates running processes"),
+        "This will shut down or restart your computer. Make sure you have saved any open work first."),
+    (r"\bDisable-WindowsOptionalFeature\b",
+        "This will turn off a built-in Windows feature. It can usually be re-enabled, but some features take time to restore."),
+    (r"\bStop-Process\b|\bkill\b",
+        "This will force-close one or more running programs. Any unsaved work in those programs will be lost."),
 ]
 
 _HIGH_WRITE_PATHS = [
@@ -118,11 +133,11 @@ def _classify_risk(tool_name: str, inputs: dict) -> tuple[str, str]:
         ext  = re.search(r"\.\w+$", path)
         ext  = ext.group().lower() if ext else ""
         if any(re.search(p, path) for p in _HIGH_WRITE_PATHS):
-            return "high", "Writing to a protected system directory"
+            return "high", "This will write a file directly into a protected Windows system folder. Changes here can affect how your entire computer runs."
         if ext in _HIGH_WRITE_EXTS:
-            return "high", f"Writing an executable file type ({ext})"
+            return "high", f"This will create a {ext} file — a type that can run programs on your computer. Only allow this if you know exactly what it does."
         if any(re.search(p, path) for p in _MEDIUM_WRITE_PATHS):
-            return "medium", "Writing to a shared system location"
+            return "medium", "This will write a file to a folder shared by all users on this computer. It may affect other accounts or installed programs."
         return "normal", ""
 
     return "normal", ""
@@ -143,11 +158,50 @@ class AgentThread(QThread):
         self.history = list(history)
         self._confirm_event = threading.Event()
         self._confirm_approved = False
+        self._client = None  # set at start of run()
 
     def resolve_confirm(self, approved: bool):
         """Called from the main thread to unblock a pending confirmation."""
         self._confirm_approved = approved
         self._confirm_event.set()
+
+    def _get_llm_description(self, tool_name: str, inputs: dict, risk_level: str) -> str:
+        """Ask Claude Haiku for a plain-English explanation. Returns '' on any failure."""
+        if self._client is None:
+            return ""
+        try:
+            if tool_name == "run_command":
+                subject = f"PowerShell command:\n{inputs.get('command', '')}"
+            elif tool_name == "write_file":
+                path = inputs.get("path", "")
+                preview = inputs.get("content", "")[:300]
+                subject = f"Writing to: {path}\nContent preview:\n{preview}"
+            else:
+                return ""
+
+            risk_note = {
+                "high":   " Emphasize that this could be permanent or very hard to undo.",
+                "medium": " Mention what could be affected if something goes wrong.",
+                "normal": "",
+            }.get(risk_level, "")
+
+            prompt = (
+                f"Explain this computer action to a non-technical user in 1-2 plain sentences.{risk_note}\n"
+                f"Be specific — mention actual file names, paths, or program names if present.\n"
+                f"Use simple everyday language. Start with 'This will...'\n"
+                f"Plain text only — no markdown, no bold, no asterisks.\n\n"
+                f"{subject}"
+            )
+
+            resp = self._client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=120,
+                messages=[{"role": "user", "content": prompt}],
+                timeout=8.0,
+            )
+            return resp.content[0].text.strip()
+        except Exception:
+            return ""
 
     def _request_confirmation(self, tool_name: str, inputs: dict) -> bool:
         """Emit confirm_needed and block until the user responds. Returns True = allow."""
@@ -163,11 +217,13 @@ class AgentThread(QThread):
         else:
             return True  # all other tools run without confirmation
 
-        risk_level, risk_detail = _classify_risk(tool_name, inputs)
+        risk_level, static_detail = _classify_risk(tool_name, inputs)
+        llm_detail = self._get_llm_description(tool_name, inputs, risk_level)
+        detail = llm_detail if llm_detail else static_detail  # LLM first, static as fallback
 
         self._confirm_event.clear()
         self._confirm_approved = False
-        self.confirm_needed.emit(title, body, risk_level, risk_detail)
+        self.confirm_needed.emit(title, body, risk_level, detail)
         self._confirm_event.wait(timeout=300)  # 5-min safety timeout
         return self._confirm_approved
 
@@ -180,6 +236,7 @@ class AgentThread(QThread):
             return
 
         client = anthropic.Anthropic(api_key=api_key)
+        self._client = client
         model = get_model()
 
         self.history.append({"role": "user", "content": self.user_message})
